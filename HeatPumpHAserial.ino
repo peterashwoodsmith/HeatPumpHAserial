@@ -200,12 +200,15 @@ void hp_sendHvacMitsubishi(
 }
 
 //
-// Connect to the heat pump over serial port. We will install the callbacks for status changes.
+// Connect to the heat pump over serial port. We will install the callbacks for status changes. We
+// Use the enable external updates so that changes made by the remove will show up in the zibgre 
+// values in home assistant.
 //
 void hp_setup() {
      extern void hp_settingsChangedCallback();
+     hp.enableExternalUpdate();
      hp.setSettingsChangedCallback(hp_settingsChangedCallback);
-     hp.connect(&Serial1);
+     hp.connect(&Serial1, 2400, 17, 16);
 }
 
 //
