@@ -1,33 +1,29 @@
 //
-// This ESP32 ARDUINO program is a Zibgee end device that will receive commands to be translated into the IR remote codes for a 
-// MISTUBISHI HEATE PUMP. THis is work in progress for a Home Assistant end point that you attach near the IR sensor of the
-// Mitsubishi heat pump and that is mains powered. This can be powered by USB, or 5V etc. A battery version that sleeps is also
-// possible but there are challanges with the sleep duration required to keep the power use down and Home Assistant timeouts.
+// This ESP32 ARDUINO program is a Zibgee end device that will receive commands to be translated into serial for the 
+// MISTUBISHI HEATE PUMP. THis is work in progress for a Home Assistant end point that you attach with the serial CT105 port
+// on the heat pump.
 //
-// The code has two major parts. The first is the IR/Mitsibushi send command that takes all the desired settings as arguments.
+// The code has two major parts. The first is the serial HeatPump object which comes from another author (see below).
 // Following that is the zibgee 3.0 Espressif Arduino code to create the end points and their controls (clusters) that select
-// the various parameters for the heat pump. This IR code is just from the HVAC IR Control project and credit goes to Vincent Cruvellier
-// and the other folks that decoded the Mitsibushi IR packets. Their code is mostly as on their git page however compiler problems
-// with passing single byte enums caused me grief so I had to de-enum their code and use good old #defines. 
-// The Zibgee code is loosly based on some of the Espressif Arduino examples and lots of trial and error experiments. Sadly I was 
-// unable to use better clusters than binary and analog, all the other choices caused problems or did not work. Ideally it should
-// use multi value (enum type) clusters for the fans/vanes but thats for future.
+// the various parameters for the heat pump. 
 //       
-//     PARTA     https://github.com/r45635/HVAC-IR-Control ,           (c)  Vincent Cruvellier
-//     PARTB     https://github.com/peterashwoodsmith/HeatPumpHA       (c)  Peter Ashwood-Smith Dec 2025 
+//     PARTA     https://github.com/SwiCago/HeatPump/tree/master,      (c) 2017 Al Betschart
+//     PARTB     https://github.com/peterashwoodsmith/HeatPumpHA       (c) 2026 Peter Ashwood-Smith 
 //
 // HARDWARE:
 //          Waveshare ESP32-C6 but should work on any ESP32 that supports Zibgee and has an RGB Led for status indication.
 //          Push button for the reset option, any momentarily on push button will work.
-//          IR 38Khz. Transmitter module - I used a DUTTY 38khz but no doubt anything of proper freq/power will work.
+//          Since the HeatPump uses 5V for its serial port and the ESP32 uses 3.3v a level shifter board with at least 
+//          two channels are required. 
 //
-//          The IR board is connected to +5V power pin and GND but it works on 3.3V pin also (although range is reduced at 
-//          the lower voltage, in any case this device is designed to be right up against the Heat Pump IR sensor). 
-//          The signal pin to drive the IR module is GPIO10 but any other pin should work as long as its not used for
-//          other purposes by the board.
+//          The level shifter board takes 5V and Ground on its High Voltage side and 3.3V and Ground on its low voltage
+//          side. The Serial TX and RX are connected to two free pins on the low voltage side, i.e. LV1, LV2 while the
+//          corresponding high voltage sides are connected to the CT105 corresponding pins for RX and TX (i.e. TX->RX).
+//          Power from the CT105 (5V) can drive the 5V pin on the ESP32-C6 and of course CT105 ground pin to ESP32-C6 Ground.
+//
 //          The reset button is connected to GPIO18 and Ground, this is convenient because they are one pin separated
 //          so you can just solder a reset button between them but any pin and ground should work. This is used to trigger a 
-//          factory reset, normal reset just power cycle the board.
+//          factory reset, for a normal reset just power cycle the board.
 //
 // BUILD NOTES:
 //          I built this on a Mac and had problems with the USB driver. Waveshare has a nice page describing how to put a new
@@ -50,10 +46,7 @@
 //          There is a debug variable you can set 1/0 for serial I/O debugging. Start 1 turn off later.
 //          On initial startup the code will start a watch dog timer just in case. This will cause a panic reset if the main
 //          loop() is not entered frequently enough indicating something got stuck. The main loop() of course 'feeds' this watch
-//          dog.
-//          Next we read the non volatile storage to see if we have previously saved values for the attributes that need to be 
-//          restored. THis is because Zibgee/HA does not seem to refresh them when we restart. Presumably there is a way to force this
-//          but I've not found it with a few weeks of playing. 
+//          dog but only in the main work part of the loop with serial port connected and functioning.
 //          Next we setup interrupt handlers for the reset button. Basically if reset is pressed we isue a reset to the ESP but we
 //          also we erase the non volatile memory which will cause the end point to forget any ziggee related information and it
 //          will have to rebind. If you do this you need to
@@ -67,37 +60,32 @@
 //          objects and a callback to set each parameter and then bind them to zibgee and wait for it to connect. After that its all
 //          callbacks.
 //          In the callbacks we just remember the attribute changes which are processed later in the main loop().
-//          In the main loop we look for any attribute changes and if so call the IR send routine. 
-//          After sending the packet with the IR routing we write the attributes to non volatile storage in case of a power interruption
-//          Or sleep (in future versions).
-//          After we send the IR packet we do a quick white flash of the RGB led then its back to green waiting.
+//          In the main loop we look for any attribute changes and if so call hp object to send the serial commands. 
+//          Note that we also take setting changes from the heap pump and feed them back to zigbee by callback. That way if the
+//          IR remove makes changes it shows up in the zibgee cluster correctly. Sadly there is no way for the zigbee changes to 
+//          appear on the IR remote.
 //
 //  Home Assistant Notes:
 //          As a Zibgee device you need to put the Zibgee in device search mode. If all goes well when the ESP32 boots it will flash 
 //          red orange then blue and stay blue until you see Home Assistant show the device has connected etc. at which point it 
 //          will flash green. Once its bound you can reset the ESP32 via power etc. and it will reattach fast and remember what ever
-//          name you gave it. Initial binding can take a few minutes. Any problems just long press to erase the NVS and delete the 
+//          name you gave it. Initial binding can take a few minutes. Any problems just press to erase the NVS and delete the 
 //          device from HA and go back into device discorvery on HA to let it rebind. Sometimes being close to the HA/Zibbee dongle
 //          helps so if its cause problem, erase the NVS, delete the device from HA and move close to your dongle to retry. I suspect 
 //          the dongles and HA notice devices trying to attach too frequently and back off a bit so sometimes waiting a few minutes to
 //          retry gives you a quik attach.
 // 
 //  TODO:
-//          Need to work on battery version and long duration sleep. Problem with this is the HA timeouts and I need to understand how
-//          to make HA not try to send when its clearly sleeping. Probably explained in some document somewhere but have not found it yet.
-//          Identify callback should probably flash the LED through rainbow colors or something. Easy enough to do but Arduino Zibgee
-//          objects don't seem to support this callback, or I missed it.
-//          ESP32-H version (i.e. non Wifi / smaller chip);
-//          Will probably look at the serial interface to the Mitsubishi too at some point but direct connect to the Heat Pump is a 
-//          warranty violation so this has to be done with caution and after warranty expires. I have no idea if Mistibuish can log 
-//          a serial device connecting or not. So caution here. The ESP32-C6 can do wifi too so no reason it cannot do the serial connect
-//          via WIFI or via Zibgee in the future. Well see.
+//          
 //
 //  NOTES:
 //          I make no claims that this even works, or that your entire house won't explode if you use it. Nobody should ever use this 
-//          for anything serious ever. This is for educational purposes only.
+//          for anything serious ever. This is for educational purposes only. Serious harm could come to your expensive heat pump if any
+//          miswiring, code failure, or other issues occur. 
 //
-//          Enjoy. Peter Ashwood-Smith
+//          Enjoy. Peter Ashwood-Smith and with thanks to Al Betschart for the superb HeatPump object code which worked perfectly first time
+//          and I've not had to change a single line of code. I include it in the Git for this project for consistency in case his code 
+//          changes in the future.
 //
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
@@ -141,7 +129,9 @@ void isr_setup()
 }
 
 //
-// Serial Interface libarary to the Heat Pump.
+// Serial Interface libarary to the Heat Pump. The hp_send.. function just translates between the zigbee values for the various clusters and what
+// the HeatPump methods take. Sadly its not that consistent because the Zigbee code only seems to be easy to do with numbers and not enumerated types.
+// Converting the zibgee clusters to proper enumerations is FFS.
 //
 HeatPump hp;
 
@@ -192,7 +182,7 @@ void hp_sendHvacMitsubishi(
             temp,    /* Between 16 and 31 */
             fan,     /* Fan speed: 1-4, AUTO, or QUIET */
             vane,    /* Air direction (vertical): 1-5, SWING, or AUTO */
-            "|"    /* Air direction (horizontal): <<, <, |, >, >>, <>, or SWING */
+            "|"      /* Air direction (horizontal): <<, <, |, >, >>, <>, or SWING */
      };
      //
      hp.setSettings(settings);
@@ -528,14 +518,14 @@ void setup() {
      if (debug_g) {
          Serial.begin(115200);
          delay(1000);
-         Serial.println("RiverView S/W Zibgee 3.0 to Mistubishi IR controller");
+         Serial.println("RiverView S/W Zibgee 3.0 to Mistubishi Serial");
      }
      //
      // Watch dog timer on this task to panic if we don't get to main loop regulary.
      //
      esp_task_wdt_deinit();
      esp_task_wdt_config_t wdt_config = {
-          .timeout_ms = 30 * 60 * 1000,                                 // 30 minutes max to get back to main loop()
+          .timeout_ms = 10 * 60 * 1000,                                 // 10 minutes max to get back to main loop()
           .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1, // Bitmask of all cores
           .trigger_panic = true };                                      // Enable panic to restart ESP32
      esp_task_wdt_init(&wdt_config);
@@ -549,22 +539,25 @@ void setup() {
      //
      // Add the zibgee clusters (buttons/sliders etc.)
      //
+     const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
+     const char *MODL = "Z2MS002";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
+     //
      if (debug_g) Serial.println("On of Power switch cluster");
-     zbPower.setManufacturerAndModel("RiverView", "MitsuIR");
+     zbPower.setManufacturerAndModel(MFGR,MODL);
      zbPower.addBinaryOutput();
      zbPower.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
      zbPower.setBinaryOutputDescription("Off => On");
      zbPower.onBinaryOutputChange(ha_setPower);
      //
      if (debug_g) Serial.println("Cold/Hot Switch cluster");
-     zbColdHot.setManufacturerAndModel("RiverView", "ZigbeeToHvacIR");
+     zbColdHot.setManufacturerAndModel(MFGR,MODL);
      zbColdHot.addBinaryOutput();
      zbColdHot.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
      zbColdHot.setBinaryOutputDescription("Cool => Heat");
      zbColdHot.onBinaryOutputChange(ha_setColdHot);
      //
      if (debug_g) Serial.println("Temp Selector cluster");
-     zbTemp.setManufacturerAndModel("RiverView", "ZigbeeToHvacIR");
+     zbTemp.setManufacturerAndModel(MFGR,MODL);
      zbTemp.addAnalogOutput();
      zbTemp.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
      zbTemp.setAnalogOutputDescription("Temperature C");
@@ -573,7 +566,7 @@ void setup() {
      zbTemp.onAnalogOutputChange(ha_setTemp);
      //
      if (debug_g) Serial.println("Fan Selector cluster");
-     zbFanControl.setManufacturerAndModel("RiverView", "ZigbeeToHvacIR");
+     zbFanControl.setManufacturerAndModel(MFGR,MODL);
      zbFanControl.addAnalogOutput();
      zbFanControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
      zbFanControl.setAnalogOutputDescription("Fan 0-4 (5-auto, 6-silent)");
@@ -582,7 +575,7 @@ void setup() {
      zbFanControl.onAnalogOutputChange(ha_setFan);
      //
      if (debug_g) Serial.println("Vane Selector cluster");
-     zbVaneControl.setManufacturerAndModel("RiverView", "ZigbeeToHvacIR");
+     zbVaneControl.setManufacturerAndModel(MFGR,MODL);
      zbVaneControl.addAnalogOutput();
      zbVaneControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
      zbVaneControl.setAnalogOutputDescription("Vane (0=Auto,1,2,3,4,5,6=move);");
@@ -663,7 +656,6 @@ void setup() {
 //
 void loop()
 {    static int ix = 0;            // Loop counter 0..4 for LED on/of flash choice.
-     esp_task_wdt_reset();         // Feed the watch dog
      //
      if (debug_g) Serial.println("loop()");
      //
@@ -678,6 +670,7 @@ void loop()
      if (hp.isConnected()) {
          hp.sync();
          status_color = RGB_LED_GREEN;
+         esp_task_wdt_reset();             // <=== ** ONLY FEED WATCH DOG IF WE ARE WORKING SUCCESSFULLY **
      }
      //
      // Alternate GREEN|WHITE/BLACK every loop instance. This is green for one second every 10 seconds or so means all good.
