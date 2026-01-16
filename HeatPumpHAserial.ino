@@ -198,8 +198,10 @@ void hp_sendHvacMitsubishi(
 //
 void hp_setup() {
      extern void hp_settingsChangedCallback();
+     extern void hp_statusChangedCallback(heatpumpStatus);
      hp.enableExternalUpdate();
      hp.setSettingsChangedCallback(hp_settingsChangedCallback);
+     hp.setStatusChangedCallback(hp_statusChangedCallback);
      hp.connect(&Serial1, 2400, 17, 16);
 }
 
@@ -215,7 +217,12 @@ ZigbeeBinary      zbColdHot     = ZigbeeBinary(11);      // Heat or cooling knob
 ZigbeeAnalog      zbTemp        = ZigbeeAnalog(12);      // Desired temperature slider
 ZigbeeAnalog      zbFanControl  = ZigbeeAnalog(13);      // How the fans operate slider
 ZigbeeAnalog      zbVaneControl = ZigbeeAnalog(14);      // Van motion/positions slider
+//                                                     
+// These are the EP sensors clusters. 
+//
 ZigbeeBinary      zbSerial      = ZigbeeBinary(15);      // Serial connection status
+ZigbeeBinary      zbOperating   = ZigbeeBinary(16);      // HP working to get desired temperature
+ZigbeeAnalog      zbRoomTemp    = ZigbeeAnalog(17);      // Temperature of room as seen by HP
 
 //
 // These are the variables that maintain the state of what HA has asked to be set
@@ -238,6 +245,8 @@ void ha_sync_status()
      zbColdHot.setBinaryOutput(ha_coldHotStatus);
      zbPower.setBinaryOutput(ha_powerStatus);
      zbSerial.setBinaryInput(hp.isConnected());
+     zbOperating.setBinaryInput(hp.getOperating());
+     zbRoomTemp.setAnalogInput(hp.getRoomTemperature());
      //
      zbVaneControl.reportAnalogOutput();
      zbFanControl.reportAnalogOutput();
@@ -245,6 +254,16 @@ void ha_sync_status()
      zbColdHot.reportBinaryOutput();
      zbPower.reportBinaryOutput();
      zbSerial.reportBinaryInput();
+     zbOperating.reportBinaryInput();
+     zbRoomTemp.reportAnalogInput();
+}
+//
+// The heat pump has reported a change in status, probably room temperature reading, or operating reading so we just synch back to
+// HA.
+//
+void hp_statusChangedCallback(heatpumpStatus s)
+{
+     ha_sync_status();
 }
 
 //
@@ -600,6 +619,19 @@ void setup() {
      zbSerial.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
      zbSerial.setBinaryInputDescription("Connected");
      //
+     if (debug_g) Serial.println("Operating cluster");
+     zbOperating.setManufacturerAndModel(MFGR,MODL);
+     zbOperating.addBinaryInput();
+     zbOperating.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
+     zbOperating.setBinaryInputDescription("Operating");
+     //
+     if (debug_g) Serial.println("RoomTemp cluster");
+     zbRoomTemp.setManufacturerAndModel(MFGR,MODL);
+     zbRoomTemp.addAnalogInput();
+     zbRoomTemp.setAnalogInputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
+     zbRoomTemp.setAnalogInputDescription("Room Temp");
+     zbRoomTemp.setAnalogInputResolution(0.1);
+     //
      if (debug_g) Serial.println("Set mains power");
      zbPower.setPowerSource(ZB_POWER_SOURCE_MAINS); 
      zbPower.onIdentify(ha_identify);
@@ -610,6 +642,8 @@ void setup() {
      Zigbee.addEndpoint(&zbFanControl);
      Zigbee.addEndpoint(&zbVaneControl);
      Zigbee.addEndpoint(&zbSerial);
+     Zigbee.addEndpoint(&zbOperating);
+     Zigbee.addEndpoint(&zbRoomTemp);
      //
      // Create a custom Zigbee configuration for End Device with longer timeouts/keepalive
      //
@@ -687,27 +721,31 @@ void loop()
      //
      int status_color = RGB_LED_WHITE;
      if (hp.isConnected()) {
+         if (debug_g) Serial.println("loop - hp.sync");
          hp.sync();
          status_color = RGB_LED_GREEN;
      } else {
+         if (debug_g) Serial.println("loop - hp_setup");
          hp_setup();
      }
      //
-     // Every so often (5 mins) we update the connected state to Home Assistant. Or if the
-     // connected state changes. 
+     // Every so often (8 mins) we update the connected state to Home Assistant. Or if the
+     // connected state changes update immediately. Hopefully this keeps the end point alive.
      //
-     {   const unsigned long  MAX_TIME           = 1000*60*6;
-         static unsigned long last_update_time   = 0;
-         static bool          last_updated_state = false;
-         unsigned long        now_time           = millis();
-         bool                 now_state          = hp.isConnected();
-         //
-         if ((now_state != last_updated_state) || (last_update_time + MAX_TIME > now_time)) {
-              zbSerial.setBinaryInput(now_state);
-              zbSerial.reportBinaryInput();
-              last_update_time   = now_time;
-              last_updated_state = now_state;
-         }
+     {  const unsigned long  MAX_TIME           = 60*8;
+        static unsigned long last_update_time   = 0;
+        static bool          last_updated_state = false;
+        unsigned long        now_time           = millis() / 1000;
+        bool                 now_state          = hp.isConnected();
+        //
+        if ((now_state != last_updated_state) || ((last_update_time + MAX_TIME) <= now_time)) {
+            if (debug_g) Serial.printf("loop - issue connected cluster update %ld %d %ld %d\n", 
+                                            last_update_time, last_updated_state, now_time, now_state);
+            zbSerial.setBinaryInput(now_state);
+            zbSerial.reportBinaryInput();
+            last_update_time   = now_time;
+            last_updated_state = now_state;
+        }
      }
      //
      // Alternate GREEN|WHITE/BLACK every loop instance. This is green for one second every 10 seconds or so means all good.
