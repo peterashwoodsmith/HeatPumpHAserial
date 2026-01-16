@@ -97,9 +97,11 @@
 
 //
 // Set 1 and you'll get lots of useful info as it runs. For debugging the lower layer Zibgee see the tools settings
-// in the Arduino menu for use with the debug enabled library and debug levels in that core.
+// in the Arduino menu for use with the debug enabled library and debug levels in that core. We can also compile in/out 
+// the watch dog timers. 
 //
-bool debug_g = true;
+const bool debug_g = false;
+const bool wdt_g   = true;
 
 // 
 // Function complete shutdown and restart. Forward declared also a flash sequence for factory reset.
@@ -213,6 +215,7 @@ ZigbeeBinary      zbColdHot     = ZigbeeBinary(11);      // Heat or cooling knob
 ZigbeeAnalog      zbTemp        = ZigbeeAnalog(12);      // Desired temperature slider
 ZigbeeAnalog      zbFanControl  = ZigbeeAnalog(13);      // How the fans operate slider
 ZigbeeAnalog      zbVaneControl = ZigbeeAnalog(14);      // Van motion/positions slider
+ZigbeeBinary      zbSerial      = ZigbeeBinary(15);      // Serial connection status
 
 //
 // These are the variables that maintain the state of what HA has asked to be set
@@ -234,12 +237,14 @@ void ha_sync_status()
      zbTemp.setAnalogOutput(ha_tempStatus);
      zbColdHot.setBinaryOutput(ha_coldHotStatus);
      zbPower.setBinaryOutput(ha_powerStatus);
+     zbSerial.setBinaryInput(hp.isConnected());
      //
      zbVaneControl.reportAnalogOutput();
      zbFanControl.reportAnalogOutput();
      zbTemp.reportAnalogOutput();
      zbColdHot.reportBinaryOutput();
      zbPower.reportBinaryOutput();
+     zbSerial.reportBinaryInput();
 }
 
 //
@@ -447,10 +452,6 @@ void ha_identify(uint16_t x)
      delay(100);
      rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
      delay(100); 
-     rgb_led_flash(RGB_LED_GREEN, RGB_LED_GREEN);
-     delay(100);
-     rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
-     delay(100); 
      rgb_led_set(RGB_LED_GREEN);
 }
 
@@ -526,22 +527,20 @@ void setup() {
      // Debug stuff
      //
      if (debug_g) {
-         Serial.begin(115200);
-         delay(1000);
-         Serial.println("RiverView S/W Zibgee 3.0 to Mistubishi Serial");
+         Serial.printf("RiverView S/W Zibgee 3.0 to Mistubishi Serial");
      }
      //
      // Watch dog timer on this task to panic if we don't get to main loop regulary.
      //
-#ifdef WDT_HP_MI
-         esp_task_wdt_deinit();
-         const esp_task_wdt_config_t wdt_config = {                         // MUST BE CONST!!
+     if (wdt_g) {
+         static const esp_task_wdt_config_t wdt_config = {                  // MUST BE CONST!!
               .timeout_ms = 10 * 60 * 1000,                                 // 10 minutes max to get back to main loop()
               .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1, // Bitmask of all cores
-              .trigger_panic = false };                                     // no panic, just restart
-         esp_task_wdt_init(&wdt_config);
-         esp_task_wdt_add(NULL);
-#endif
+              .trigger_panic = true };                                      // no panic, just restart
+         ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&wdt_config));
+         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+         ESP_ERROR_CHECK(esp_task_wdt_status(NULL));
+     }
      //
      rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
      //
@@ -552,7 +551,7 @@ void setup() {
      // Add the zibgee clusters (buttons/sliders etc.)
      //
      const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
-     const char *MODL = "Z2MS001";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
+     const char *MODL = "Z2MS002";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
      //
      if (debug_g) Serial.println("On of Power switch cluster");
      zbPower.setManufacturerAndModel(MFGR,MODL);
@@ -595,6 +594,12 @@ void setup() {
      zbVaneControl.setAnalogOutputMinMax(0, 6);  
      zbVaneControl.onAnalogOutputChange(ha_setVane);
      //
+     if (debug_g) Serial.println("Serial cluster");
+     zbSerial.setManufacturerAndModel(MFGR,MODL);
+     zbSerial.addBinaryInput();
+     zbSerial.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
+     zbSerial.setBinaryInputDescription("Connected");
+     //
      if (debug_g) Serial.println("Set mains power");
      zbPower.setPowerSource(ZB_POWER_SOURCE_MAINS); 
      zbPower.onIdentify(ha_identify);
@@ -604,6 +609,7 @@ void setup() {
      Zigbee.addEndpoint(&zbTemp);
      Zigbee.addEndpoint(&zbFanControl);
      Zigbee.addEndpoint(&zbVaneControl);
+     Zigbee.addEndpoint(&zbSerial);
      //
      // Create a custom Zigbee configuration for End Device with longer timeouts/keepalive
      //
@@ -612,8 +618,8 @@ void setup() {
           .install_code_policy = false,                      \
           .nwk_cfg = {                                       \
             .zed_cfg =  {                                    \                                                          
-                .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_64MIN, \
-                .keep_alive = 60000,                         \
+                .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_16MIN, \
+                .keep_alive = 3000,                          \
               },                                             \
           },                                                 \
        };
@@ -676,15 +682,32 @@ void loop()
          ha_restart();   
      }
      //
-     // if we have comms with heat pump sync anything to/from the heat pump.
+     // if we have comms with heat pump sync anything to/from the heat pump. Otherwise we try to 
+     // reestablish comms with the heat pump.
      //
      int status_color = RGB_LED_WHITE;
      if (hp.isConnected()) {
          hp.sync();
          status_color = RGB_LED_GREEN;
-#ifdef   WDT_HP_MI
-            esp_task_wdt_reset();             // <=== ** ONLY FEED WATCH DOG IF WE ARE WORKING SUCCESSFULLY **
-#endif
+     } else {
+         hp_setup();
+     }
+     //
+     // Every so often (5 mins) we update the connected state to Home Assistant. Or if the
+     // connected state changes. 
+     //
+     {   const unsigned long  MAX_TIME           = 1000*60*6;
+         static unsigned long last_update_time   = 0;
+         static bool          last_updated_state = false;
+         unsigned long        now_time           = millis();
+         bool                 now_state          = hp.isConnected();
+         //
+         if ((now_state != last_updated_state) || (last_update_time + MAX_TIME > now_time)) {
+              zbSerial.setBinaryInput(now_state);
+              zbSerial.reportBinaryInput();
+              last_update_time   = now_time;
+              last_updated_state = now_state;
+         }
      }
      //
      // Alternate GREEN|WHITE/BLACK every loop instance. This is green for one second every 10 seconds or so means all good.
@@ -696,5 +719,8 @@ void loop()
      // Do any pending work for about a second if there is some.
      //
      ha_processPending();
-     delay(1000);
+     delay(1000);   
+     if (wdt_g) {
+         ESP_ERROR_CHECK(esp_task_wdt_reset());         // <=== FEED WATCH DOG 
+     }
 }
