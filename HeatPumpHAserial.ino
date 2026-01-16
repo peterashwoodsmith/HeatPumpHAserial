@@ -99,7 +99,7 @@
 // Set 1 and you'll get lots of useful info as it runs. For debugging the lower layer Zibgee see the tools settings
 // in the Arduino menu for use with the debug enabled library and debug levels in that core.
 //
-bool debug_g = false;
+bool debug_g = true;
 
 // 
 // Function complete shutdown and restart. Forward declared also a flash sequence for factory reset.
@@ -513,6 +513,16 @@ void ha_restart()
 //
 void setup() {
      //
+     // Get everything back to square one, we don't always power reset and I'm not convinced these get reset
+     // as globals when a panic restart happens.
+     //
+     ha_update_t      = 0;
+     ha_powerStatus   = 0;    // powered on/off
+     ha_coldHotStatus = 0;    // heating or cooling mode
+     ha_fanStatus     = 0;    // fan position or movement
+     ha_tempStatus    = 0;    // desired temperature
+     ha_vaneStatus    = 0;    // how the vanes move or don't
+     //
      // Debug stuff
      //
      if (debug_g) {
@@ -523,13 +533,15 @@ void setup() {
      //
      // Watch dog timer on this task to panic if we don't get to main loop regulary.
      //
-     esp_task_wdt_deinit();
-     esp_task_wdt_config_t wdt_config = {
-          .timeout_ms = 10 * 60 * 1000,                                 // 10 minutes max to get back to main loop()
-          .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1, // Bitmask of all cores
-          .trigger_panic = true };                                      // Enable panic to restart ESP32
-     esp_task_wdt_init(&wdt_config);
-     esp_task_wdt_add(NULL);                                            //add current thread to WDT watch
+#ifdef WDT_HP_MI
+         esp_task_wdt_deinit();
+         const esp_task_wdt_config_t wdt_config = {                         // MUST BE CONST!!
+              .timeout_ms = 10 * 60 * 1000,                                 // 10 minutes max to get back to main loop()
+              .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1, // Bitmask of all cores
+              .trigger_panic = false };                                     // no panic, just restart
+         esp_task_wdt_init(&wdt_config);
+         esp_task_wdt_add(NULL);
+#endif
      //
      rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
      //
@@ -540,7 +552,7 @@ void setup() {
      // Add the zibgee clusters (buttons/sliders etc.)
      //
      const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
-     const char *MODL = "Z2MS002";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
+     const char *MODL = "Z2MS001";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
      //
      if (debug_g) Serial.println("On of Power switch cluster");
      zbPower.setManufacturerAndModel(MFGR,MODL);
@@ -670,7 +682,9 @@ void loop()
      if (hp.isConnected()) {
          hp.sync();
          status_color = RGB_LED_GREEN;
-         esp_task_wdt_reset();             // <=== ** ONLY FEED WATCH DOG IF WE ARE WORKING SUCCESSFULLY **
+#ifdef   WDT_HP_MI
+            esp_task_wdt_reset();             // <=== ** ONLY FEED WATCH DOG IF WE ARE WORKING SUCCESSFULLY **
+#endif
      }
      //
      // Alternate GREEN|WHITE/BLACK every loop instance. This is green for one second every 10 seconds or so means all good.
