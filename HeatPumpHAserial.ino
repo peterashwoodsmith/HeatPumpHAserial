@@ -88,6 +88,7 @@
 //          changes in the future.
 //
 #include <esp_task_wdt.h>
+#include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #ifndef ZIGBEE_MODE_ED
 #error "Zigbee end device mode is not selected in Tools->Zigbee mode"
@@ -104,9 +105,71 @@ const bool debug_g = false;
 const bool wdt_g   = true;
 
 // 
+// Non volatile storage for debugging. When we restart etc. we will write the reasons 
+// and track last uptime etc. for display via a Zigbee debug cluster sensor.
+//
+const char       *ha_nvs_name = "_HeatPumpHAserial_NVS";   // Unique name for our partition
+const char       *ha_nvs_vname= "_vars_";                  // name for our packeed variables
+nvs_handle_t      ha_nvs_handle;                           // Once open this is read/write to NVS
+uint32_t          ha_nvs_last_uptime = 0;                  // minutes we were up last time before reboot
+uint32_t          ha_nvs_last_reboot_reason = 0;           // why we rebooted last time. (0 factory reset)
+uint32_t          ha_nvs_last_reboot_count = 0;            // increase each reboot except factory reset
+
+//
+// We are looking for persistant values of the last reboot reason and last uptime. We store these two packed
+// into a single Uint32 which we depack after reading from the NVS.
+//
+void ha_nvs_read()
+{    
+     ha_nvs_last_reboot_reason = 0;
+     ha_nvs_last_uptime        = 0;
+     ha_nvs_last_reboot_count  = 0;
+
+     //
+     esp_err_t err = nvs_flash_init();
+     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // NVS partition was truncated and needs to be erased
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+     }
+     ESP_ERROR_CHECK(err);
+     err = nvs_open(ha_nvs_name, NVS_READWRITE, &ha_nvs_handle);
+     if (err != ESP_OK) {
+        if (debug_g) Serial.printf("Error (%s) opening NVS handle!\n", esp_err_to_name(err));
+        return;
+     }  
+     //
+     uint32_t vars;
+     err = nvs_get_u32(ha_nvs_handle, ha_nvs_vname, &vars);
+     if (err != ESP_OK) return;
+     ha_nvs_last_reboot_reason = vars & 0xff;
+     ha_nvs_last_reboot_count  = (vars >> 8) & 0xff;
+     ha_nvs_last_uptime = vars >> 16;
+}
+
+//
+// And here is the write to NVS of the attributes after they have been changed and sent to the Heat Pump
+//
+void ha_nvs_write(uint32_t reason = 0, uint32_t uptime = 0)
+{
+     ha_nvs_last_reboot_count = (ha_nvs_last_reboot_count + 1) & 0xff;
+     reason &= 0xff;
+     uptime &= 0x0000fffff;
+     uint32_t vars  = reason | (ha_nvs_last_reboot_count << 8) || (uptime << 16);
+     esp_err_t err = nvs_set_u32(ha_nvs_handle, ha_nvs_vname, vars);
+     if (err != ESP_OK) {
+         if (debug_g) Serial.printf("Vars %s can't write, because %s\n", ha_nvs_vname, esp_err_to_name(err));
+         return;
+     }
+     err = nvs_commit(ha_nvs_handle);
+     if (err != ESP_OK) {
+         if (debug_g) Serial.printf("Vars %s can't commit, because %s\n", ha_nvs_vname, esp_err_to_name(err));
+     }  
+}
+// 
 // Function complete shutdown and restart. Forward declared also a flash sequence for factory reset.
 //
-extern void ha_restart(); 
+extern void ha_restart(uint32_t reason, uint32_t uptime); 
 extern void rgb_led_set_factory_reset();
 
 //
@@ -116,7 +179,7 @@ void isr_resetButtonPress()
 {      
      rgb_led_set_factory_reset();                       // Go white so its obvious
      Zigbee.factoryReset(false);                        // This should do the same but not sure it does anyway ...
-     ha_restart();                                      // And stop all the Zigbee stuff and just restart the ESP
+     ha_restart(0, 0);                                  // And stop all the Zigbee stuff and just restart the ESP
 }
 
 //
@@ -128,6 +191,15 @@ void isr_setup()
      pinMode(isr_resetButton, INPUT_PULLUP);                // Pullup so GROUNDing cause FALLING and ungrounding causes RISING interrupts.
      //
      attachInterrupt(digitalPinToInterrupt(isr_resetButton), isr_resetButtonPress,   FALLING);  
+}
+
+//
+// If the task watch dog times out, rather than use the system handler it will come here and we do a nice
+// controlled reboot and keep track of the reason and how long we were up for better debugging.
+//
+void esp_task_wdt_isr_user_handler(void)
+{
+     ha_restart(0xff, millis()/1000); 
 }
 
 //
@@ -228,7 +300,11 @@ ZigbeeAnalog      zbVaneControl = ZigbeeAnalog(14);      // Van motion/positions
 ZigbeeBinary      zbSerial      = ZigbeeBinary(15);      // Serial connection status
 ZigbeeBinary      zbOperating   = ZigbeeBinary(16);      // HP working to get desired temperature
 ZigbeeAnalog      zbRoomTemp    = ZigbeeAnalog(17);      // Temperature of room as seen by HP
-
+//
+ZigbeeAnalog      zbRebootReason= ZigbeeAnalog(18);      // reason for last reboot
+ZigbeeAnalog      zbLastUptime  = ZigbeeAnalog(19);      // How long it was up last time before reboot
+ZigbeeAnalog      zbRebootCount = ZigbeeAnalog(20);      // How many reboots since factory reset
+ZigbeeAnalog      zbUptime      = ZigbeeAnalog(21);      // Seconds since last reboot.
 //
 // These are the variables that maintain the state of what HA has asked to be set
 // set.
@@ -252,6 +328,10 @@ void ha_sync_status()
      zbSerial.setBinaryInput(hp.isConnected());
      zbOperating.setBinaryInput(hp.getOperating());
      zbRoomTemp.setAnalogInput(hp.getRoomTemperature());
+     zbRebootReason.setAnalogInput(ha_nvs_last_reboot_reason);
+     zbLastUptime.setAnalogInput(ha_nvs_last_uptime);
+     zbRebootCount.setAnalogInput(ha_nvs_last_reboot_count);
+     zbUptime.setAnalogInput(millis()/1000);
      //
      zbVaneControl.reportAnalogOutput();
      zbFanControl.reportAnalogOutput();
@@ -261,6 +341,10 @@ void ha_sync_status()
      zbSerial.reportBinaryInput();
      zbOperating.reportBinaryInput();
      zbRoomTemp.reportAnalogInput();
+     zbRebootReason.reportAnalogInput();
+     zbLastUptime.reportAnalogInput();
+     zbRebootCount.reportAnalogInput();
+     zbUptime.reportAnalogInput();
 }
 //
 // The heat pump has reported a change in status, probably room temperature reading, or operating reading so we just synch back to
@@ -489,7 +573,7 @@ void ha_processPending()
      do { 
          if (!Zigbee.connected()) {
               if (debug_g) Serial.println("zigbee disconnected while in ha_processPending()- restarting");
-              ha_restart();   
+              ha_restart(4, millis()/1000);   
         }
         delay(50);
         //
@@ -519,8 +603,9 @@ void ha_processPending()
 // awake seems to be what actually works, going to longer sleep gives me timeouts in HA that I need to 
 // to figure out before extending this.
 //
-void ha_restart()
+void ha_restart(uint32_t reason, uint32_t uptime)
 {  
+     ha_nvs_write(reason, uptime);        // remember why we are restarting so it can be shown in HA next time
      rgb_led_set(RGB_LED_OFF);            // Sometimes gets stuck on, don't know why perhaps timing.      
      delay(100);
      rgb_led_set(RGB_LED_OFF);            // So do it twice .
@@ -537,6 +622,10 @@ void ha_restart()
 // and go back to sleep. 
 //
 void setup() {
+     //
+     // We get debug information from last reboot (uptime and reboot reason etc.)
+     ha_nvs_read();
+     //
      //
      // Get everything back to square one, we don't always power reset and I'm not convinced these get reset
      // as globals when a panic restart happens.
@@ -603,7 +692,7 @@ void setup() {
      if (debug_g) Serial.println("Fan Selector cluster");
      zbFanControl.setManufacturerAndModel(MFGR,MODL);
      zbFanControl.addAnalogOutput();
-     zbFanControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
+     zbFanControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
      zbFanControl.setAnalogOutputDescription("Fan 0-4 (5-auto, 6-silent)");
      zbFanControl.setAnalogOutputResolution(1);
      zbFanControl.setAnalogOutputMinMax(0, 6);  
@@ -612,7 +701,7 @@ void setup() {
      if (debug_g) Serial.println("Vane Selector cluster");
      zbVaneControl.setManufacturerAndModel(MFGR,MODL);
      zbVaneControl.addAnalogOutput();
-     zbVaneControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
+     zbVaneControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
      zbVaneControl.setAnalogOutputDescription("Vane (0=Auto,1,2,3,4,5,6=move);");
      zbVaneControl.setAnalogOutputResolution(1);
      zbVaneControl.setAnalogOutputMinMax(0, 6);  
@@ -637,6 +726,34 @@ void setup() {
      zbRoomTemp.setAnalogInputDescription("Room Temp");
      zbRoomTemp.setAnalogInputResolution(0.1);
      //
+     if (debug_g) Serial.println("RebootReason cluster");
+     zbRebootReason.setManufacturerAndModel(MFGR,MODL);
+     zbRebootReason.addAnalogInput();
+     zbRebootReason.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbRebootReason.setAnalogInputDescription("Last Reboot Reason");
+     zbRebootReason.setAnalogInputResolution(1.0);
+     //
+     if (debug_g) Serial.println("LastUptime cluster");
+     zbLastUptime.setManufacturerAndModel(MFGR,MODL);
+     zbLastUptime.addAnalogInput();
+     zbLastUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbLastUptime.setAnalogInputDescription("Last Uptime");
+     zbLastUptime.setAnalogInputResolution(1.0);
+     //
+     if (debug_g) Serial.println("RebootCount cluster");
+     zbRebootCount.setManufacturerAndModel(MFGR,MODL);
+     zbRebootCount.addAnalogInput();
+     zbRebootCount.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbRebootCount.setAnalogInputDescription("Reboot Count");
+     zbRebootCount.setAnalogInputResolution(1.0);
+     //
+     if (debug_g) Serial.println("This Uptime");
+     zbUptime.setManufacturerAndModel(MFGR,MODL);
+     zbUptime.addAnalogInput();
+     zbUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbUptime.setAnalogInputDescription("This Uptime");
+     zbUptime.setAnalogInputResolution(1.0);
+     //
      if (debug_g) Serial.println("Set mains power");
      zbPower.setPowerSource(ZB_POWER_SOURCE_MAINS); 
      zbPower.onIdentify(ha_identify);
@@ -649,6 +766,10 @@ void setup() {
      Zigbee.addEndpoint(&zbSerial);
      Zigbee.addEndpoint(&zbOperating);
      Zigbee.addEndpoint(&zbRoomTemp);
+     Zigbee.addEndpoint(&zbRebootReason);
+     Zigbee.addEndpoint(&zbLastUptime);
+     Zigbee.addEndpoint(&zbRebootCount);
+     Zigbee.addEndpoint(&zbUptime);
      //
      // Create a custom Zigbee configuration for End Device with longer timeouts/keepalive
      //
@@ -675,7 +796,7 @@ void setup() {
         }
         rgb_led_flash(RGB_LED_RED, RGB_LED_RED);  // Sometimes it stays orange
         rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
-        ha_restart();
+        ha_restart(1, millis()/1000);             // restart and remember why
      }
      //
      // Now connect to network.
@@ -693,7 +814,7 @@ void setup() {
            }
            rgb_led_flash(RGB_LED_ORANGE, RGB_LED_ORANGE);  // We tried for 30 minutes, restart.
            rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
-           ha_restart();   
+           ha_restart(2, millis()/1000);   
         }
      }
      rgb_led_flash(RGB_LED_BLUE, RGB_LED_BLUE);   
@@ -718,7 +839,7 @@ void loop()
      //
      if (!Zigbee.connected()) {
          if (debug_g) Serial.println("zigbee disconnected while in loop()- restarting");
-         ha_restart();   
+         ha_restart(3, millis()/1000);   
      }
      //
      // if we have comms with heat pump sync anything to/from the heat pump and feed the watch
@@ -737,7 +858,7 @@ void loop()
          if (wdt_g) ESP_ERROR_CHECK(esp_task_wdt_reset());         
      } 
      //
-     // Every so often (8 mins) we update the connected state to Home Assistant. Or if the
+     // Every so often (5 mins) we update the connected state to Home Assistant. Or if the
      // connected state changes update immediately. Hopefully this keeps the end point alive.
      //
      {  const unsigned long  MAX_TIME           = 60*8;
@@ -753,6 +874,8 @@ void loop()
             zbSerial.reportBinaryInput();
             last_update_time   = now_time;
             last_updated_state = now_state;
+            zbUptime.setAnalogInput(millis()/1000);
+            zbUptime.reportAnalogInput();
         }
      }
      //
