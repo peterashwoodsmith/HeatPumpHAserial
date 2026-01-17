@@ -187,8 +187,13 @@ void hp_sendHvacMitsubishi(
             "|"      /* Air direction (horizontal): <<, <, |, >, >>, <>, or SWING */
      };
      //
-     hp.setSettings(settings);
-     hp.update();
+     // And set the desired settings and request an update to the HP.
+     // Avoid doing this if we are not connected.
+     //
+     if (hp.isConnected()) {
+         hp.setSettings(settings);
+         hp.update();
+     }
 }
 
 //
@@ -716,18 +721,21 @@ void loop()
          ha_restart();   
      }
      //
-     // if we have comms with heat pump sync anything to/from the heat pump. Otherwise we try to 
-     // reestablish comms with the heat pump.
+     // if we have comms with heat pump sync anything to/from the heat pump and feed the watch
+     // dog. Otherwise don't feed watch dog. We can stay up and run for 10 minutes to play with
+     // zibgee stuff but we'll get restarted to try to reestablish serial comms.
+     //
      //
      int status_color = RGB_LED_WHITE;
      if (hp.isConnected()) {
          if (debug_g) Serial.println("loop - hp.sync");
          hp.sync();
          status_color = RGB_LED_GREEN;
-     } else {
-         if (debug_g) Serial.println("loop - hp_setup");
-         hp_setup();
-     }
+         //
+         // And feed the watch dog because all is well, zigbee ok and serial comms ok.
+         // 
+         if (wdt_g) ESP_ERROR_CHECK(esp_task_wdt_reset());         
+     } 
      //
      // Every so often (8 mins) we update the connected state to Home Assistant. Or if the
      // connected state changes update immediately. Hopefully this keeps the end point alive.
@@ -757,12 +765,6 @@ void loop()
      // Do any pending work for about a second if there is some.
      //
      ha_processPending();
-     //
-     // And feed the watch dog.
-     // 
-     if (wdt_g) {
-         ESP_ERROR_CHECK(esp_task_wdt_reset());         
-     }
      //
      // No need to buzz this loop, little pause is fine.
      //
