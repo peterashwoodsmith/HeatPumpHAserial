@@ -592,7 +592,7 @@ void setup() {
      zbTemp.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
      zbTemp.setAnalogOutputDescription("Temperature C");
      zbTemp.setAnalogOutputResolution(1);
-     zbTemp.setAnalogOutputMinMax(0, 30); 
+     zbTemp.setAnalogOutputMinMax(16, 31); 
      zbTemp.onAnalogOutputChange(ha_setTemp);
      //
      if (debug_g) Serial.println("Fan Selector cluster");
@@ -757,8 +757,14 @@ void loop()
      // Do any pending work for about a second if there is some.
      //
      ha_processPending();
-     delay(1000);   
+     //
+     // And feed the watch dog.
+     // 
      if (wdt_g) {
-         ESP_ERROR_CHECK(esp_task_wdt_reset());         // <=== FEED WATCH DOG 
+         ESP_ERROR_CHECK(esp_task_wdt_reset());         
      }
+     //
+     // No need to buzz this loop, little pause is fine.
+     //
+     delay(1000);
 }
