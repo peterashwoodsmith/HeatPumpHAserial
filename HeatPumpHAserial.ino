@@ -108,7 +108,7 @@ static const char *TAG = "HP2ZS";
 // in the Arduino menu for use with the debug enabled library and debug levels in that core. We can also compile in/out 
 // the watch dog timers. 
 //
-const bool debug_g = true;
+const bool debug_g = false;
 const bool wdt_g   = true;
 
 // 
@@ -151,9 +151,33 @@ void ha_nvs_read()
           if (debug_g) DPRINTF("ha_nvs_read - cant get variable name %s\n", ha_nvs_name);
           return;
      }
-     ha_nvs_last_reboot_reason = vars         & 0xff;
-     ha_nvs_last_reboot_count  = (vars >> 8)  & 0xff;
-     ha_nvs_last_uptime        = (vars >> 16) & 0xffff;
+     ha_nvs_last_reboot_reason  = vars         & 0xff;
+     ha_nvs_last_reboot_count   = (vars >> 8)  & 0xff;
+     ha_nvs_last_uptime         = (vars >> 16) & 0xffff;
+     ha_nvs_last_reboot_reason += esp_reset_reason() * 1000;  // See below for why * 1000
+     /* 
+      * For convenient reference. We multiply these by 1000 to we can see the 
+      * ESPs idea why it rebooted together with our own reboot reason as a single
+      * number displayed as a Zigbee cluster. This is taken from the enum so they 
+      * start at 0,1,2... 
+      *
+      * ESP_RST_UNKNOWN,    //!< Reset reason can not be determined
+      * ESP_RST_POWERON,    //!< Reset due to power-on event
+      * ESP_RST_EXT,        //!< Reset by external pin (not applicable for ESP32)
+      * ESP_RST_SW,         //!< Software reset via esp_restart
+      * ESP_RST_PANIC,      //!< Software reset due to exception/panic
+      * ESP_RST_INT_WDT,    //!< Reset (software or hardware) due to interrupt watchdog
+      * ESP_RST_TASK_WDT,   //!< Reset due to task watchdog
+      * ESP_RST_WDT,        //!< Reset due to other watchdogs
+      * ESP_RST_DEEPSLEEP,  //!< Reset after exiting deep sleep mode
+      * ESP_RST_BROWNOUT,   //!< Brownout reset (software or hardware)
+      * ESP_RST_SDIO,       //!< Reset over SDIO
+      * ESP_RST_USB,        //!< Reset by USB peripheral
+      * ESP_RST_JTAG,       //!< Reset by JTAG
+      * ESP_RST_EFUSE,      //!< Reset due to efuse error
+      * ESP_RST_PWR_GLITCH, //!< Reset due to power glitch detected
+      * ESP_RST_CPU_LOCKUP, //!< Reset due to CPU lock up (double exception)
+      */
      if (debug_g) {
           DPRINTF("ha_nvs_read got vars=%x, reason %d, count %d, uptime=%d\n", vars,
                ha_nvs_last_reboot_reason, ha_nvs_last_reboot_count, ha_nvs_last_uptime);
@@ -215,7 +239,7 @@ void isr_setup()
 //
 void esp_task_wdt_isr_user_handler(void)
 {
-     ha_restart(0xff, millis()/1000); 
+     ha_restart(1, millis()/1000); 
 }
 
 //
@@ -609,7 +633,7 @@ void ha_processPending()
      do { 
          if (!Zigbee.connected()) {
               if (debug_g) DPRINTF("zigbee disconnected while in ha_processPending()- restarting\n");
-              ha_restart(4, millis()/1000);   
+              ha_restart(2, millis()/1000);   
         }
         delay(50);
         //
@@ -766,14 +790,14 @@ void setup() {
      if (debug_g) DPRINTF("RebootReason cluster\n");
      zbRebootReason.setManufacturerAndModel(MFGR,MODL);
      zbRebootReason.addAnalogInput();
-     zbRebootReason.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbRebootReason.setAnalogInputApplication(ESP_ZB_ZCL_AI_SET_APP_TYPE_WITH_ID(ESP_ZB_ZCL_AI_APP_TYPE_OTHER, 0));
      zbRebootReason.setAnalogInputDescription("Last Reboot Reason");
      zbRebootReason.setAnalogInputResolution(1.0);
      //
      if (debug_g) DPRINTF("LastUptime cluster\n");
      zbLastUptime.setManufacturerAndModel(MFGR,MODL);
      zbLastUptime.addAnalogInput();
-     zbLastUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbLastUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_TIME_OTHER);
      zbLastUptime.setAnalogInputDescription("Last Uptime");
      zbLastUptime.setAnalogInputResolution(1.0);
      //
@@ -787,7 +811,7 @@ void setup() {
      if (debug_g) DPRINTF("This Uptime\n");
      zbUptime.setManufacturerAndModel(MFGR,MODL);
      zbUptime.addAnalogInput();
-     zbUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_TIME_OTHER);
      zbUptime.setAnalogInputDescription("This Uptime");
      zbUptime.setAnalogInputResolution(1.0);
      //
@@ -833,7 +857,7 @@ void setup() {
         }
         rgb_led_flash(RGB_LED_RED, RGB_LED_RED);  // Sometimes it stays orange
         rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
-        ha_restart(1, millis()/1000);             // restart and remember why
+        ha_restart(3, millis()/1000);             // restart and remember why
      }
      //
      // Now connect to network.
@@ -851,7 +875,7 @@ void setup() {
            }
            rgb_led_flash(RGB_LED_ORANGE, RGB_LED_ORANGE);  // We tried for 30 minutes, restart.
            rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
-           ha_restart(2, millis()/1000);   
+           ha_restart(4, millis()/1000);   
         }
      }
      rgb_led_flash(RGB_LED_BLUE, RGB_LED_BLUE);   
@@ -880,7 +904,7 @@ void loop()
      //
      if (!Zigbee.connected()) {
          if (debug_g) DPRINTF("zigbee disconnected while in loop()- restarting\n");
-         ha_restart(3, millis()/1000);   
+         ha_restart(5, millis()/1000);   
      }
      //
      // if we have comms with heat pump sync anything to/from the heat pump and feed the watch
