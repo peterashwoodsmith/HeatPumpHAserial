@@ -98,6 +98,10 @@
 #include "esp_log.h"
 
 //
+// Output unitless count app type missing so define it.
+//
+#define ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT  ESP_ZB_ZCL_AO_SET_APP_TYPE_WITH_ID( ESP_ZB_ZCL_AO_APP_TYPE_COUNT_UNITLESS, 0x0000)
+//
 // Debugging stuff, simple macro to log debug for us.
 //
 static const char *TAG = "HP2ZS"; 
@@ -108,7 +112,7 @@ static const char *TAG = "HP2ZS";
 // in the Arduino menu for use with the debug enabled library and debug levels in that core. We can also compile in/out 
 // the watch dog timers. 
 //
-const bool debug_g = false;
+const bool debug_g = true;
 const bool wdt_g   = true;
 
 // 
@@ -722,7 +726,7 @@ void setup() {
      // Add the zibgee clusters (buttons/sliders etc.)
      //
      const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
-     const char *MODL = "Z2MS002";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
+     const char *MODL = "Z2MS001";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
      //
      if (debug_g) DPRINTF("On of Power switch cluster\n");
      zbPower.setManufacturerAndModel(MFGR,MODL);
@@ -741,7 +745,7 @@ void setup() {
      if (debug_g) DPRINTF("Temp Selector cluster\n");
      zbTemp.setManufacturerAndModel(MFGR,MODL);
      zbTemp.addAnalogOutput();
-     zbTemp.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
+     zbTemp.setAnalogOutputApplication(ESP_ZB_ZCL_AO_TEMPERATURE_OTHER);
      zbTemp.setAnalogOutputDescription("Temperature C");
      zbTemp.setAnalogOutputResolution(1);
      zbTemp.setAnalogOutputMinMax(16, 31); 
@@ -750,7 +754,7 @@ void setup() {
      if (debug_g) DPRINTF("Fan Selector cluster\n");
      zbFanControl.setManufacturerAndModel(MFGR,MODL);
      zbFanControl.addAnalogOutput();
-     zbFanControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbFanControl.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
      zbFanControl.setAnalogOutputDescription("Fan 0-4 (5-auto, 6-silent)");
      zbFanControl.setAnalogOutputResolution(1);
      zbFanControl.setAnalogOutputMinMax(0, 6);  
@@ -759,7 +763,8 @@ void setup() {
      if (debug_g) DPRINTF("Vane Selector cluster\n");
      zbVaneControl.setManufacturerAndModel(MFGR,MODL);
      zbVaneControl.addAnalogOutput();
-     zbVaneControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     
+     zbVaneControl.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
      zbVaneControl.setAnalogOutputDescription("Vane (0=Auto,1,2,3,4,5,6=move);");
      zbVaneControl.setAnalogOutputResolution(1);
      zbVaneControl.setAnalogOutputMinMax(0, 6);  
@@ -783,33 +788,34 @@ void setup() {
      zbRoomTemp.setAnalogInputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
      zbRoomTemp.setAnalogInputDescription("Room Temp");
      zbRoomTemp.setAnalogInputResolution(0.1);
+     zbRoomTemp.setAnalogInputMinMax(0, 40);
      //
      if (debug_g) DPRINTF("RebootReason cluster\n");
      zbRebootReason.setManufacturerAndModel(MFGR,MODL);
      zbRebootReason.addAnalogInput();
-     zbRebootReason.setAnalogInputApplication(ESP_ZB_ZCL_AI_SET_APP_TYPE_WITH_ID(ESP_ZB_ZCL_AI_APP_TYPE_OTHER, 0));
+     zbRebootReason.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
      zbRebootReason.setAnalogInputDescription("Last Reboot Reason");
      zbRebootReason.setAnalogInputResolution(1.0);
      //
      if (debug_g) DPRINTF("LastUptime cluster\n");
      zbLastUptime.setManufacturerAndModel(MFGR,MODL);
      zbLastUptime.addAnalogInput();
-     zbLastUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_TIME_OTHER);
-     zbLastUptime.setAnalogInputDescription("Last Uptime");
+     zbLastUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
+     zbLastUptime.setAnalogInputDescription("Last Uptime s");
      zbLastUptime.setAnalogInputResolution(1.0);
      //
      if (debug_g) DPRINTF("RebootCount cluster\n");
      zbRebootCount.setManufacturerAndModel(MFGR,MODL);
      zbRebootCount.addAnalogInput();
-     zbRebootCount.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
+     zbRebootCount.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
      zbRebootCount.setAnalogInputDescription("Reboot Count");
      zbRebootCount.setAnalogInputResolution(1.0);
      //
      if (debug_g) DPRINTF("This Uptime\n");
      zbUptime.setManufacturerAndModel(MFGR,MODL);
      zbUptime.addAnalogInput();
-     zbUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_TIME_OTHER);
-     zbUptime.setAnalogInputDescription("This Uptime");
+     zbUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
+     zbUptime.setAnalogInputDescription("This Uptime s");
      zbUptime.setAnalogInputResolution(1.0);
      //
      if (debug_g) DPRINTF("Set mains power\n");
