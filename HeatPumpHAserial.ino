@@ -95,22 +95,29 @@
 #endif
 #include "Zigbee.h"
 #include "HeatPump.h"
+#include "esp_log.h"
+
+//
+// Debugging stuff, simple macro to log debug for us.
+//
+static const char *TAG = "HP2ZS"; 
+#define DPRINTF(format, ...)  ESP_LOGD(TAG, format, ##__VA_ARGS__) 
 
 //
 // Set 1 and you'll get lots of useful info as it runs. For debugging the lower layer Zibgee see the tools settings
 // in the Arduino menu for use with the debug enabled library and debug levels in that core. We can also compile in/out 
 // the watch dog timers. 
 //
-const bool debug_g = false;
+const bool debug_g = true;
 const bool wdt_g   = true;
 
 // 
 // Non volatile storage for debugging. When we restart etc. we will write the reasons 
 // and track last uptime etc. for display via a Zigbee debug cluster sensor.
 //
-const char       *ha_nvs_name = "_HeatPumpHAserial_NVS";   // Unique name for our partition
+const char       *ha_nvs_name = "_HP2MIS_";                // Unique name for our partition
 const char       *ha_nvs_vname= "_vars_";                  // name for our packeed variables
-nvs_handle_t      ha_nvs_handle;                           // Once open this is read/write to NVS
+nvs_handle_t      ha_nvs_handle = 0;                       // Once open this is read/write to NVS
 uint32_t          ha_nvs_last_uptime = 0;                  // minutes we were up last time before reboot
 uint32_t          ha_nvs_last_reboot_reason = 0;           // why we rebooted last time. (0 factory reset)
 uint32_t          ha_nvs_last_reboot_count = 0;            // increase each reboot except factory reset
@@ -124,27 +131,33 @@ void ha_nvs_read()
      ha_nvs_last_reboot_reason = 0;
      ha_nvs_last_uptime        = 0;
      ha_nvs_last_reboot_count  = 0;
-
      //
      esp_err_t err = nvs_flash_init();
      if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         // NVS partition was truncated and needs to be erased
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
+        nvs_flash_erase();
+        nvs_flash_init();
+        if (debug_g) DPRINTF("ha_nvs_read - nvs_flash_init\n", esp_err_to_name(err));
      }
-     ESP_ERROR_CHECK(err);
      err = nvs_open(ha_nvs_name, NVS_READWRITE, &ha_nvs_handle);
      if (err != ESP_OK) {
-        if (debug_g) Serial.printf("Error (%s) opening NVS handle!\n", esp_err_to_name(err));
+        if (debug_g) DPRINTF("ha_nvs_read - Error (%s) opening NVS name %s!\n", esp_err_to_name(err), ha_nvs_name);
         return;
      }  
      //
      uint32_t vars;
      err = nvs_get_u32(ha_nvs_handle, ha_nvs_vname, &vars);
-     if (err != ESP_OK) return;
-     ha_nvs_last_reboot_reason = vars & 0xff;
-     ha_nvs_last_reboot_count  = (vars >> 8) & 0xff;
-     ha_nvs_last_uptime = vars >> 16;
+     if (err != ESP_OK) {
+          if (debug_g) DPRINTF("ha_nvs_read - cant get variable name %s\n", ha_nvs_name);
+          return;
+     }
+     ha_nvs_last_reboot_reason = vars         & 0xff;
+     ha_nvs_last_reboot_count  = (vars >> 8)  & 0xff;
+     ha_nvs_last_uptime        = (vars >> 16) & 0xffff;
+     if (debug_g) {
+          DPRINTF("ha_nvs_read got vars=%x, reason %d, count %d, uptime=%d\n", vars,
+               ha_nvs_last_reboot_reason, ha_nvs_last_reboot_count, ha_nvs_last_uptime);
+     }
 }
 
 //
@@ -155,15 +168,18 @@ void ha_nvs_write(uint32_t reason = 0, uint32_t uptime = 0)
      ha_nvs_last_reboot_count = (ha_nvs_last_reboot_count + 1) & 0xff;
      reason &= 0xff;
      uptime &= 0x0000fffff;
-     uint32_t vars  = reason | (ha_nvs_last_reboot_count << 8) || (uptime << 16);
+     uint32_t vars  = reason | (ha_nvs_last_reboot_count << 8) | (uptime << 16);
+     if (debug_g) {
+          DPRINTF("ha_nvs_write got vars=%x, reason %d, count %d, uptime=%d\n", vars, reason, ha_nvs_last_reboot_count, uptime);
+     }
      esp_err_t err = nvs_set_u32(ha_nvs_handle, ha_nvs_vname, vars);
      if (err != ESP_OK) {
-         if (debug_g) Serial.printf("Vars %s can't write, because %s\n", ha_nvs_vname, esp_err_to_name(err));
+         if (debug_g) DPRINTF("ha_nvs_write  %s can't write, because %s\n", ha_nvs_vname, esp_err_to_name(err));
          return;
      }
      err = nvs_commit(ha_nvs_handle);
      if (err != ESP_OK) {
-         if (debug_g) Serial.printf("Vars %s can't commit, because %s\n", ha_nvs_vname, esp_err_to_name(err));
+         if (debug_g) DPRINTF("ha_nvs_write %s can't commit, because %s\n", ha_nvs_vname, esp_err_to_name(err));
      }  
 }
 // 
@@ -347,6 +363,22 @@ void ha_sync_status()
      zbUptime.reportAnalogInput();
 }
 //
+// Keep HA up to date with any changes that happen on the heat pump from the serial updates.
+//
+void ha_sync_nvs_clusters()
+{
+     zbRebootReason.setAnalogInput(ha_nvs_last_reboot_reason);
+     zbLastUptime.setAnalogInput(ha_nvs_last_uptime);
+     zbRebootCount.setAnalogInput(ha_nvs_last_reboot_count);
+     zbUptime.setAnalogInput(millis()/1000);
+     //
+     zbRebootReason.reportAnalogInput();
+     zbLastUptime.reportAnalogInput();
+     zbRebootCount.reportAnalogInput();
+     zbUptime.reportAnalogInput();
+}
+
+//
 // The heat pump has reported a change in status, probably room temperature reading, or operating reading so we just synch back to
 // HA.
 //
@@ -394,7 +426,7 @@ void ha_syncHeatPump()
          case 1: hv_mode = 1; break;
          case 0: hv_mode = 0; break;
          default:
-                 if (debug_g) Serial.printf("Invalid power status =% d\n", ha_coldHotStatus);
+                 if (debug_g) DPRINTF("Invalid power status =%d\n", ha_coldHotStatus);
                  return;
      }
      //
@@ -403,7 +435,7 @@ void ha_syncHeatPump()
      int hv_fanMode   = ha_fanStatus;
      int hv_vanneMode = ha_vaneStatus;
      //
-     if (debug_g) Serial.printf("*** SEND HVAC COMMAND: mode=%d, temp=%d, fan=%d, vane=%d, off=%d ***\n",
+     if (debug_g) DPRINTF("*** SEND HVAC COMMAND: mode=%d, temp=%d, fan=%d, vane=%d, off=%d ***\n",
                                  hv_mode, hv_temp, hv_fanMode, hv_vanneMode, hv_powerOff);
      //                         
      // Send the serial command to the Mitsubishi.
@@ -417,30 +449,31 @@ void ha_syncHeatPump()
 //
 void ha_displayPowerStatus()
 {
-     Serial.printf("POWER STATUS     = %s\n", ha_powerStatus ? "ON" : "OFF"); 
+     DPRINTF("POWER STATUS     = %s\n", ha_powerStatus ? "ON" : "OFF"); 
 }
 //
 void ha_displayFanStatus()
 {     
-     Serial.printf("FAN STATUS       = %d\n", ha_fanStatus);
+     DPRINTF("FAN STATUS       = %d\n", ha_fanStatus);
 }
 //
 void ha_displayVaneStatus()
 {
-     if ((ha_vaneStatus < 0)||(ha_vaneStatus > 6))
-        Serial.printf("VANE STATUS      = %d ????\n", ha_vaneStatus);
-     else
-        Serial.printf("VANE STATUS      = %d\n", ha_vaneStatus);
+     if ((ha_vaneStatus < 0)||(ha_vaneStatus > 6)) {
+        DPRINTF("VANE STATUS      = %d ????\n", ha_vaneStatus);
+     } else {
+        DPRINTF("VANE STATUS      = %d\n", ha_vaneStatus);
+     }
 }
 //
 void ha_displayColdHotStatus()
 {    
-     Serial.printf("COOL/HEAT STATUS = %s (%x)\n", ha_coldHotStatus ? "HEAT" : "COOL", (unsigned int) ha_coldHotStatus);
+     DPRINTF("COOL/HEAT STATUS = %s (%x)\n", ha_coldHotStatus ? "HEAT" : "COOL", (unsigned int) ha_coldHotStatus);
 }
 //
 void ha_displayTempStatus()
 {    
-     Serial.printf("TEMP STATUS      = %d\n", ha_tempStatus);
+     DPRINTF("TEMP STATUS      = %d\n", ha_tempStatus);
 }
 
 //
@@ -459,7 +492,7 @@ void ha_setFan(float value)
 {
      if (ha_fanStatus != (int) value) {
          ha_fanStatus = value;
-         if (debug_g) { Serial.print("HA=> "); ha_displayFanStatus(); }
+         if (debug_g) { DPRINTF("HA=> "); ha_displayFanStatus(); }
          ha_update_t = millis() + 5000;
      }
 }
@@ -468,7 +501,7 @@ void ha_setPower(bool value)
 {
      if (ha_powerStatus != value) {
          ha_powerStatus = value;
-         if (debug_g) { Serial.print("HA=> "); ha_displayPowerStatus(); }
+         if (debug_g) { DPRINTF("HA=> "); ha_displayPowerStatus(); }
          ha_update_t = millis() + 5000;
      }
 }
@@ -477,7 +510,7 @@ void ha_setColdHot(bool state)
 {
      if (ha_coldHotStatus != state) { 
          ha_coldHotStatus = state;
-         if (debug_g) { Serial.print("HA=> "); ha_displayColdHotStatus(); }
+         if (debug_g) { DPRINTF("HA=> "); ha_displayColdHotStatus(); }
          ha_update_t = millis() + 5000;
      }
 }
@@ -486,7 +519,7 @@ void ha_setTemp(float value)
 {    
      if (ha_tempStatus != (int) value) {
          ha_tempStatus = value;
-         if (debug_g) { Serial.print("HA=> "); ha_displayTempStatus(); }
+         if (debug_g) { DPRINTF("HA=> "); ha_displayTempStatus(); }
          ha_update_t = millis() + 5000;
      }
 }
@@ -495,7 +528,7 @@ void ha_setVane(float value)
 {
      if (ha_vaneStatus != (int) value) {
          ha_vaneStatus = value;
-         if (debug_g) { Serial.print("HA=> "); ha_displayVaneStatus(); }
+         if (debug_g) { DPRINTF("HA=> "); ha_displayVaneStatus(); }
          ha_update_t = millis() + 5000;
      }
 }
@@ -552,7 +585,7 @@ void rgb_led_set_factory_reset()
 //
 void ha_identify(uint16_t x)
 {
-     if (debug_g) Serial.printf("******** HA => IDENTIFY(%d) ******\n", (int) x);
+     if (debug_g) DPRINTF("******** HA => IDENTIFY(%d) ******\n", (int) x);
      //
      rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
      delay(100);
@@ -561,6 +594,9 @@ void ha_identify(uint16_t x)
      rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
      delay(100); 
      rgb_led_set(RGB_LED_GREEN);
+     
+     static int ii = 10, jj = 20;
+     ha_nvs_write(ii++, jj++);         // Testing
 }
 
 //
@@ -572,7 +608,7 @@ void ha_processPending()
      uint32_t end_t = millis() + 1000;   
      do { 
          if (!Zigbee.connected()) {
-              if (debug_g) Serial.println("zigbee disconnected while in ha_processPending()- restarting");
+              if (debug_g) DPRINTF("zigbee disconnected while in ha_processPending()- restarting\n");
               ha_restart(4, millis()/1000);   
         }
         delay(50);
@@ -583,13 +619,13 @@ void ha_processPending()
         if ((ha_update_t > 0) && (millis() > ha_update_t)) {
             ha_update_t = 0;
             if (debug_g) {
-                Serial.printf("----------------------------- wait for HA  msgs ------------------------------------\n");
+                DPRINTF("----------------------------- wait for HA  msgs ------------------------------------\n");
                 ha_displayPowerStatus();
                 ha_displayColdHotStatus();
                 ha_displayTempStatus();
                 ha_displayFanStatus();
                 ha_displayVaneStatus();
-                Serial.println("Synch with HVAC required\n");
+                DPRINTF("Synch with HVAC required\n");
             }  
             ha_syncHeatPump();
             rgb_led_flash(RGB_LED_WHITE, RGB_LED_GREEN);   // flash white, return to green
@@ -610,7 +646,7 @@ void ha_restart(uint32_t reason, uint32_t uptime)
      delay(100);
      rgb_led_set(RGB_LED_OFF);            // So do it twice .
      delay(100);
-     if (debug_g) Serial.println("Restarting..."); 
+     if (debug_g) DPRINTF("Restarting...\n"); 
      Zigbee.closeNetwork();
      Zigbee.stop();
      delay(100);
@@ -623,9 +659,15 @@ void ha_restart(uint32_t reason, uint32_t uptime)
 //
 void setup() {
      //
+     // Debug stuff
+     //
+     if (debug_g) {
+         esp_log_level_set(TAG, ESP_LOG_DEBUG);
+         DPRINTF("RiverView S/W Zibgee 3.0 to Mistubishi Serial");
+     }
+     //
      // We get debug information from last reboot (uptime and reboot reason etc.)
      ha_nvs_read();
-     //
      //
      // Get everything back to square one, we don't always power reset and I'm not convinced these get reset
      // as globals when a panic restart happens.
@@ -636,12 +678,7 @@ void setup() {
      ha_fanStatus     = 0;    // fan position or movement
      ha_tempStatus    = 0;    // desired temperature
      ha_vaneStatus    = 0;    // how the vanes move or don't
-     //
-     // Debug stuff
-     //
-     if (debug_g) {
-         Serial.printf("RiverView S/W Zibgee 3.0 to Mistubishi Serial");
-     }
+   
      //
      // Watch dog timer on this task to panic if we don't get to main loop regulary.
      //
@@ -650,9 +687,9 @@ void setup() {
               .timeout_ms = 10 * 60 * 1000,                                 // 10 minutes max to get back to main loop()
               .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1, // Bitmask of all cores
               .trigger_panic = true };                                      // no panic, just restart
-         ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&wdt_config));
-         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
-         ESP_ERROR_CHECK(esp_task_wdt_status(NULL));
+         esp_task_wdt_reconfigure(&wdt_config);
+         esp_task_wdt_add(NULL);
+         esp_task_wdt_status(NULL);
      }
      //
      rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
@@ -666,21 +703,21 @@ void setup() {
      const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
      const char *MODL = "Z2MS002";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
      //
-     if (debug_g) Serial.println("On of Power switch cluster");
+     if (debug_g) DPRINTF("On of Power switch cluster\n");
      zbPower.setManufacturerAndModel(MFGR,MODL);
      zbPower.addBinaryOutput();
      zbPower.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
      zbPower.setBinaryOutputDescription("Off => On");
      zbPower.onBinaryOutputChange(ha_setPower);
      //
-     if (debug_g) Serial.println("Cold/Hot Switch cluster");
+     if (debug_g) DPRINTF("Cold/Hot Switch cluster\n");
      zbColdHot.setManufacturerAndModel(MFGR,MODL);
      zbColdHot.addBinaryOutput();
      zbColdHot.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
      zbColdHot.setBinaryOutputDescription("Cool => Heat");
      zbColdHot.onBinaryOutputChange(ha_setColdHot);
      //
-     if (debug_g) Serial.println("Temp Selector cluster");
+     if (debug_g) DPRINTF("Temp Selector cluster\n");
      zbTemp.setManufacturerAndModel(MFGR,MODL);
      zbTemp.addAnalogOutput();
      zbTemp.setAnalogOutputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
@@ -689,7 +726,7 @@ void setup() {
      zbTemp.setAnalogOutputMinMax(16, 31); 
      zbTemp.onAnalogOutputChange(ha_setTemp);
      //
-     if (debug_g) Serial.println("Fan Selector cluster");
+     if (debug_g) DPRINTF("Fan Selector cluster\n");
      zbFanControl.setManufacturerAndModel(MFGR,MODL);
      zbFanControl.addAnalogOutput();
      zbFanControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
@@ -698,7 +735,7 @@ void setup() {
      zbFanControl.setAnalogOutputMinMax(0, 6);  
      zbFanControl.onAnalogOutputChange(ha_setFan);
      //
-     if (debug_g) Serial.println("Vane Selector cluster");
+     if (debug_g) DPRINTF("Vane Selector cluster\n");
      zbVaneControl.setManufacturerAndModel(MFGR,MODL);
      zbVaneControl.addAnalogOutput();
      zbVaneControl.setAnalogOutputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
@@ -707,54 +744,54 @@ void setup() {
      zbVaneControl.setAnalogOutputMinMax(0, 6);  
      zbVaneControl.onAnalogOutputChange(ha_setVane);
      //
-     if (debug_g) Serial.println("Serial cluster");
+     if (debug_g) DPRINTF("Serial cluster\n");
      zbSerial.setManufacturerAndModel(MFGR,MODL);
      zbSerial.addBinaryInput();
      zbSerial.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
      zbSerial.setBinaryInputDescription("Connected");
      //
-     if (debug_g) Serial.println("Operating cluster");
+     if (debug_g) DPRINTF("Operating cluster\n");
      zbOperating.setManufacturerAndModel(MFGR,MODL);
      zbOperating.addBinaryInput();
      zbOperating.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
      zbOperating.setBinaryInputDescription("Operating");
      //
-     if (debug_g) Serial.println("RoomTemp cluster");
+     if (debug_g) DPRINTF("RoomTemp cluster");
      zbRoomTemp.setManufacturerAndModel(MFGR,MODL);
      zbRoomTemp.addAnalogInput();
      zbRoomTemp.setAnalogInputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
      zbRoomTemp.setAnalogInputDescription("Room Temp");
      zbRoomTemp.setAnalogInputResolution(0.1);
      //
-     if (debug_g) Serial.println("RebootReason cluster");
+     if (debug_g) DPRINTF("RebootReason cluster\n");
      zbRebootReason.setManufacturerAndModel(MFGR,MODL);
      zbRebootReason.addAnalogInput();
      zbRebootReason.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
      zbRebootReason.setAnalogInputDescription("Last Reboot Reason");
      zbRebootReason.setAnalogInputResolution(1.0);
      //
-     if (debug_g) Serial.println("LastUptime cluster");
+     if (debug_g) DPRINTF("LastUptime cluster\n");
      zbLastUptime.setManufacturerAndModel(MFGR,MODL);
      zbLastUptime.addAnalogInput();
      zbLastUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
      zbLastUptime.setAnalogInputDescription("Last Uptime");
      zbLastUptime.setAnalogInputResolution(1.0);
      //
-     if (debug_g) Serial.println("RebootCount cluster");
+     if (debug_g) DPRINTF("RebootCount cluster\n");
      zbRebootCount.setManufacturerAndModel(MFGR,MODL);
      zbRebootCount.addAnalogInput();
      zbRebootCount.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
      zbRebootCount.setAnalogInputDescription("Reboot Count");
      zbRebootCount.setAnalogInputResolution(1.0);
      //
-     if (debug_g) Serial.println("This Uptime");
+     if (debug_g) DPRINTF("This Uptime\n");
      zbUptime.setManufacturerAndModel(MFGR,MODL);
      zbUptime.addAnalogInput();
      zbUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_OTHER);
      zbUptime.setAnalogInputDescription("This Uptime");
      zbUptime.setAnalogInputResolution(1.0);
      //
-     if (debug_g) Serial.println("Set mains power");
+     if (debug_g) DPRINTF("Set mains power\n");
      zbPower.setPowerSource(ZB_POWER_SOURCE_MAINS); 
      zbPower.onIdentify(ha_identify);
      //
@@ -784,15 +821,15 @@ void setup() {
           },                                                 \
        };
      //
-     if (debug_g) Serial.println("Starting Zigbee");
+     if (debug_g) DPRINTF("Starting Zigbee\n");
      rgb_led_flash(RGB_LED_ORANGE, RGB_LED_ORANGE);
      //
      // When all EPs are registered, start Zigbee in End Device mode
      //
      if (!Zigbee.begin(&zigbeeConfig, false)) { 
         if (debug_g) {
-            Serial.println("Zigbee failed to start!");
-            Serial.println("Rebooting ESP32!");
+            DPRINTF("Zigbee failed to start!\n");
+            DPRINTF("Rebooting ESP32!\n");
         }
         rgb_led_flash(RGB_LED_RED, RGB_LED_RED);  // Sometimes it stays orange
         rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
@@ -801,16 +838,16 @@ void setup() {
      //
      // Now connect to network.
      //
-     if (debug_g) Serial.println("Connecting to network");   
+     if (debug_g) DPRINTF("Connecting to network\n");   
      int tries = 0;      
      while (!Zigbee.connected()) {
         rgb_led_flash(RGB_LED_BLUE, RGB_LED_BLUE);         // the led sets have delays built in
         delay(5000);
-        if (debug_g) Serial.println("connecting..\n");
+        if (debug_g) DPRINTF("connecting..\n");
         if (tries ++ > 360) {                              // Maximum 30 minutes trying    
            if (debug_g) {
-               Serial.println("Zigbee failed to connect!");
-               Serial.println("Rebooting ESP32!");
+               DPRINTF("Zigbee failed to connect!\n");
+               DPRINTF("Rebooting ESP32!\n");
            }
            rgb_led_flash(RGB_LED_ORANGE, RGB_LED_ORANGE);  // We tried for 30 minutes, restart.
            rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
@@ -818,13 +855,17 @@ void setup() {
         }
      }
      rgb_led_flash(RGB_LED_BLUE, RGB_LED_BLUE);   
-     if (debug_g) Serial.println("Successfully connected to Zigbee network");
+     if (debug_g) DPRINTF("Successfully connected to Zigbee network\n");
      //
      // Try to get the heat pump connected via serial port and install callbacks.
      // If it connects we will ge the current configuration and synch it with zibgee to
      // HA.
      //
      hp_setup();
+     //
+     // Update the debug related information to HA.
+     //
+     ha_sync_nvs_clusters();
 }
 
 //
@@ -835,10 +876,10 @@ void setup() {
 void loop()
 {    static int ix = 0;            // Loop counter 0..4 for LED on/of flash choice.
      //
-     if (debug_g) Serial.println("loop()");
+     if (debug_g) DPRINTF("loop()\n");
      //
      if (!Zigbee.connected()) {
-         if (debug_g) Serial.println("zigbee disconnected while in loop()- restarting");
+         if (debug_g) DPRINTF("zigbee disconnected while in loop()- restarting\n");
          ha_restart(3, millis()/1000);   
      }
      //
@@ -849,33 +890,32 @@ void loop()
      //
      int status_color = RGB_LED_WHITE;
      if (hp.isConnected()) {
-         if (debug_g) Serial.println("loop - hp.sync");
+         if (debug_g) DPRINTF("loop - hp.sync\n");
          hp.sync();
          status_color = RGB_LED_GREEN;
          //
          // And feed the watch dog because all is well, zigbee ok and serial comms ok.
          // 
-         if (wdt_g) ESP_ERROR_CHECK(esp_task_wdt_reset());         
+         if (wdt_g) esp_task_wdt_reset();         
      } 
      //
      // Every so often (5 mins) we update the connected state to Home Assistant. Or if the
      // connected state changes update immediately. Hopefully this keeps the end point alive.
      //
-     {  const unsigned long  MAX_TIME           = 60*8;
+     {  const unsigned long  MAX_TIME           = 60*5;
         static unsigned long last_update_time   = 0;
         static bool          last_updated_state = false;
         unsigned long        now_time           = millis() / 1000;
         bool                 now_state          = hp.isConnected();
         //
         if ((now_state != last_updated_state) || ((last_update_time + MAX_TIME) <= now_time)) {
-            if (debug_g) Serial.printf("loop - issue connected cluster update %ld %d %ld %d\n", 
+            if (debug_g) DPRINTF("loop - issue connected cluster update %ld %d %ld %d\n", 
                                             last_update_time, last_updated_state, now_time, now_state);
             zbSerial.setBinaryInput(now_state);
             zbSerial.reportBinaryInput();
             last_update_time   = now_time;
             last_updated_state = now_state;
-            zbUptime.setAnalogInput(millis()/1000);
-            zbUptime.reportAnalogInput();
+            ha_sync_nvs_clusters();            // Debug stuff
         }
      }
      //
