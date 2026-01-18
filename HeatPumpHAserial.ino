@@ -618,9 +618,6 @@ void ha_identify(uint16_t x)
      rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
      delay(100); 
      rgb_led_set(RGB_LED_GREEN);
-     
-     static int ii = 10, jj = 20;
-     ha_nvs_write(ii++, jj++);         // Testing
 }
 
 //
