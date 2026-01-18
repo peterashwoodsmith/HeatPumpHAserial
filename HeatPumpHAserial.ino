@@ -112,7 +112,7 @@ static const char *TAG = "HP2ZS";
 // in the Arduino menu for use with the debug enabled library and debug levels in that core. We can also compile in/out 
 // the watch dog timers. 
 //
-const bool debug_g = true;
+const bool debug_g = false;
 const bool wdt_g   = true;
 
 // 
@@ -610,18 +610,21 @@ void rgb_led_set_factory_reset()
 
 //
 // Called when device is asked to identify itself. We will just flash alternating white and green for 1/2 second or so.
+// We get called 5 or 6 times with x = 5, 4, ... down to 0. We only triggers the flashing on the 0 call.
 //
 void ha_identify(uint16_t x)
 {
      if (debug_g) DPRINTF("******** HA => IDENTIFY(%d) ******\n", (int) x);
      //
-     rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
-     delay(100);
-     rgb_led_flash(RGB_LED_GREEN, RGB_LED_GREEN);
-     delay(100);
-     rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
-     delay(100); 
-     rgb_led_set(RGB_LED_GREEN);
+     if (x == 0) {
+        rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
+        delay(500);
+        rgb_led_flash(RGB_LED_GREEN, RGB_LED_GREEN);
+        delay(500);
+        rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
+        delay(500); 
+        rgb_led_set(RGB_LED_GREEN);
+     }
 }
 
 //
@@ -960,3 +963,6 @@ void loop()
      //
      delay(1000);
 }
+
+
+
