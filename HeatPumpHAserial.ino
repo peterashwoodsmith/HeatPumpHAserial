@@ -729,7 +729,7 @@ void setup() {
      // Add the zibgee clusters (buttons/sliders etc.)
      //
      const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
-     const char *MODL = "Z2MS001";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
+     const char *MODL = "Z2MS004";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
      //
      if (debug_g) DPRINTF("On of Power switch cluster\n");
      zbPower.setManufacturerAndModel(MFGR,MODL);
@@ -963,6 +963,10 @@ void loop()
      //
      delay(1000);
 }
+
+/*
+   Cluster ID 0x0202 Identifier: 0x0000 -   Value 00 = off, 1 = low, 2=med, 3=high, 4=on, 5=auto, 6=smart   
+*/
 
 
 
