@@ -1,2 +1,6 @@
 # HeatPumpHAserial
-Uses Zibgee on ESP32 to Serially link local to Mitsubishi heat pump
+
+We create a Zigbee end point using the ESP32 Zibgee library to ontrol a Mitsibushi heat pump via its 
+serial port interface.
+
+See the comments in the HeatPumpHAserial.ino comments for full details.
