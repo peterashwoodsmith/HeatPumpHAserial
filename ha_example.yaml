@@ -1,0 +1,96 @@
+      - type: grid
+        cards:
+          - type: heading
+            heading: Living Room 005
+            heading_style: title
+            icon: mdi:sofa
+          - type: tile
+            entity: switch.riverview_z2ms005_off_on
+            name:
+              type: entity
+            color: green
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: switch.riverview_z2ms005_cool_heat
+            name: Off/Cool => On/Heat
+            color: red
+            vertical: false
+            tap_action:
+              action: none
+            double_tap_action:
+              action: toggle
+            icon_tap_action:
+              action: none
+            icon_double_tap_action:
+              action: toggle
+            features_position: bottom
+            visibility:
+              - condition: state
+                entity: switch.riverview_z2ms005_off_on
+                state: 'on'
+          - type: tile
+            entity: number.riverview_z2ms005_fan_0_4_5_auto_6_silent
+            name:
+              type: entity
+            icon: mdi:fan
+            color: blue
+            vertical: false
+            features_position: bottom
+            visibility:
+              - condition: state
+                entity: switch.riverview_z2ms005_off_on
+                state: 'on'
+          - type: tile
+            entity: number.riverview_z2ms005_temperature_c
+            name:
+              type: entity
+            icon: mdi:temperature-celsius
+            color: red
+            vertical: false
+            features_position: bottom
+            visibility:
+              - condition: state
+                entity: switch.riverview_z2ms005_off_on
+                state: 'on'
+          - type: tile
+            entity: number.riverview_z2ms005_vane_0_auto_123456_move
+            name:
+              type: entity
+            icon: mdi:fan-chevron-down
+            color: purple
+            vertical: false
+            features_position: bottom
+            visibility:
+              - condition: state
+                entity: switch.riverview_z2ms005_off_on
+                state: 'on'
+          - type: tile
+            entity: sensor.riverview_z2ms005_temperature
+            name: Room Temperature
+            color: red
+            vertical: false
+            features_position: bottom
+          - type: tile
+            visibility:
+              - condition: state
+                entity: binary_sensor.riverview_z2ms005_connected
+                state_not: 'on'
+            entity: binary_sensor.riverview_z2ms005_connected
+            name:
+              type: entity
+            icon: mdi:connection
+            color: green
+            vertical: false
+            features_position: bottom
+          - type: tile
+            visibility:
+              - condition: state
+                entity: binary_sensor.riverview_z2ms005_operating
+                state: 'on'
+            entity: binary_sensor.riverview_z2ms005_operating
+            name: Working
+            icon: mdi:heat-wave
+            color: red
+            vertical: false
+            features_position: bottom
