@@ -12,4 +12,7 @@ Since the zigbee chosen icons etc. are not good this overwrites those defaults a
 interface however much more could be done with a markup or something more flexible but there are 
 only so many hours in a day.
 
+If you are using Zigbee2MQTT an additional configuration file is included to help with the mappings
+of the clusters. This is mitsubishi_hp.js and is provided with thanks to Martin P Dee. 
+
 See the comments in the HeatPumpHAserial.ino for full details
