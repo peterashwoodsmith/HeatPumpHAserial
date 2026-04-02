@@ -4,6 +4,12 @@ is provided in Wiring.pdf however this is based on my heat pumps and I make no g
 wiring will be the same so you must measure carefully to determine if this is appropriate for
 your devices.
 
+Included in this repository are HeatPump.cpp and HeatPump.h on which this code relies to provide the 
+serial interface to the Heat Pump. This excellent piece of code is located in github along with other 
+examples of its use. Link below:
+
+https://github.com/SwiCago/HeatPump/tree/master  (c) 2017 Al Betschart
+ 
 Also included are a trivial little box and lid that conveniently fit the hardware on the side
 of the heat pump that you can 3d print or of course any plastic box of suitable dimensions would work.
 
