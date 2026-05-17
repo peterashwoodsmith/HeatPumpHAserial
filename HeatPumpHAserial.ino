@@ -418,7 +418,7 @@ void hp_statusChangedCallback(heatpumpStatus s)
 //
 // The heat pump has reported a change in settings, likely from the remote. Anyway we read the settings
 // set the ha_* variables above so we are up to date, and then reflect them back to zibgee with the sync
-// function above.
+// function above. Note we only support modes COOL and HEAT so anything else just report as OFF to Zigbee.
 //
 void hp_settingsChangedCallback()
 {
@@ -426,7 +426,16 @@ void hp_settingsChangedCallback()
      //
      if (s.temperature > 0) ha_tempStatus      = s.temperature;
      if (s.power)           ha_powerStatus     = strcmp(s.power, "OFF")  == 0 ? 0 : 1;
-     if (s.mode)            ha_coldHotStatus   = strcmp(s.mode,  "COOL") == 0 ? 0 : 1;
+     //
+     switch(s.mode[0]) {
+            case 'H': ha_coldHotStatus = 1;    // "HEAT"
+                      break;
+            case 'C': ha_coldHotStatus = 0;    // "COOL"
+                      break;
+            default : ha_coldHotStatus = 0;    // SOMETHING UNSUPPORTED
+                      ha_powerStatus   = 0;    // SO REPORT AS COOL/OFF
+                      break;
+     }
      //
      if (s.fan) {
          if (sscanf(s.fan, "%d", &ha_fanStatus) != 1) {
