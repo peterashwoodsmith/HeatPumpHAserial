@@ -427,14 +427,15 @@ void hp_settingsChangedCallback()
      if (s.temperature > 0) ha_tempStatus      = s.temperature;
      if (s.power)           ha_powerStatus     = strcmp(s.power, "OFF")  == 0 ? 0 : 1;
      //
-     switch(s.mode[0]) {
-            case 'H': ha_coldHotStatus = 1;    // "HEAT"
-                      break;
-            case 'C': ha_coldHotStatus = 0;    // "COOL"
-                      break;
-            default : ha_coldHotStatus = 0;    // SOMETHING UNSUPPORTED
-                      ha_powerStatus   = 0;    // SO REPORT AS COOL/OFF
-                      break;
+     if (s.mode) {
+          if (strcmp(s.mode, "HEAT") == 0) {
+              ha_coldHotStatus = 1;
+          } else if (strcmp(s.mode, "COOL") == 0) {
+              ha_coldHotStatus = 0;
+          } else {
+              ha_coldHotStatus = 0;
+              ha_powerStatus = 0;
+          }
      }
      //
      if (s.fan) {
@@ -738,7 +739,7 @@ void setup() {
      // Add the zibgee clusters (buttons/sliders etc.)
      //
      const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
-     const char *MODL = "Z2MS005";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
+     const char *MODL = "Z2MS003";      // Zigbeee 2 Mitsubishi Serial - device 001, 002, 003 etc.
      //
      if (debug_g) DPRINTF("On of Power switch cluster\n");
      zbPower.setManufacturerAndModel(MFGR,MODL);
